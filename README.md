@@ -75,7 +75,7 @@ set(ONDEWO_LIBRARY_NAME ondewo_t2s_client CACHE STRING "" FORCE)
 FetchContent_Declare(
   ondewo_t2s_client
   GIT_REPOSITORY https://github.com/ondewo/ondewo-t2s-client-cpp.git
-  GIT_TAG        0.1.0)
+  GIT_TAG        6.6.0)
 FetchContent_MakeAvailable(ondewo_t2s_client)
 
 # Note the UNqualified target name: the `ondewo::` namespace is created by the install/export step

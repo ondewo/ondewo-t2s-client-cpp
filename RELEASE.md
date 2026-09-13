@@ -2,7 +2,7 @@
 
 *****************
 
-## Release ONDEWO T2S C++ Client 0.1.0
+## Release ONDEWO T2S C++ Client 6.6.0
 
 ### New Features
 

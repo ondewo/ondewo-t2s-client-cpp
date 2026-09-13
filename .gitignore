@@ -3,8 +3,9 @@ ondewo-devops-accounts
 build_check.txt
 build_check_tmp.txt
 
-# CMake build tree (`make build_library` / `make clean`)
+# CMake build trees (`make build_library` / `make unit_test` / `make clean`)
 build/
+build-tests/
 cmake-build-*/
 CMakeCache.txt
 CMakeFiles/
@@ -39,6 +40,8 @@ lib/
 *.gcda
 *.gcno
 *.gcov
+coverage.txt
+coverage.xml
 
 # C++ package manager caches
 .conan/
