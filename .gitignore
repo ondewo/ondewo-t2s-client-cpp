@@ -1,0 +1,63 @@
+# release automation
+ondewo-devops-accounts
+build_check.txt
+build_check_tmp.txt
+
+# CMake build tree (`make build_library` / `make clean`)
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+_deps/
+compile_commands.json
+.cmake/
+
+# Install tree written into the repository root by the proto compiler and by `cmake --install`
+include/
+lib/
+
+# Smoke-test scratch directory created and removed by `make smoke_test`
+.smoke-test/
+
+# Compiled objects, archives, shared objects and binaries
+*.o
+*.obj
+*.lo
+*.slo
+*.a
+*.la
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.gcda
+*.gcno
+*.gcov
+
+# C++ package manager caches
+.conan/
+.conan2/
+conan_build/
+vcpkg_installed/
+.cache/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# The generated stub SOURCES (api/, public-api.h) and the generated build files
+# (CMakeLists.txt, ondewo-client-config.cmake.in) are deliberately NOT ignored: C++ has no
+# package registry, so a git tag is this client's only distribution channel and a consumer must
+# get a buildable CMake project out of a plain `git clone` / FetchContent, without Docker.
+# Only the BUILD OUTPUT above is ignored. Uncomment the two lines below to keep the generated
+# sources out of the repository instead - consumers then need Docker and `make build`.
+# api/
+# public-api.h

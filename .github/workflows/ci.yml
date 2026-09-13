@@ -1,0 +1,84 @@
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per branch/PR ref: a new push supersedes the in-flight run. Never on master, so every
+# commit on a release branch keeps its own result instead of being cancelled by the next push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  build:
+    name: cmake build + smoke test
+    # Pinned, NOT ubuntu-latest. protobuf C++ gives no cross-version gencode/runtime guarantee
+    # (https://protobuf.dev/support/cross-version-runtime-guarantee/) - the generated code in api/
+    # carries a #error poison pill unless the runtime is the exact same version. The committed
+    # stubs are produced by ondewo-cpp-proto-compiler, which pins Debian trixie
+    # (ARG PROTOBUF_VERSION=3.21.12 / ARG GRPC_VERSION=1.51.1); ubuntu-24.04 ships that same
+    # protobuf. Moving this runner without checking those two ARGs will break the build.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      # The submodules are codegen INPUTS only and the generated stubs are committed, so the
+      # build itself does not need them. `make check_build` does - it compares api/ against the
+      # .proto tree - so pull the API submodule in when it is reachable. Best effort on purpose:
+      # a private or unavailable API repository must not fail CI, check_build then reports a
+      # labelled skip instead. ondewo-proto-compiler is only needed by `make build_compiler`,
+      # which this workflow does not run (that would require Docker and a full image build).
+      - name: Initialize the API submodule (best effort)
+        continue-on-error: true
+        run: git submodule update --init --recursive ondewo-t2s-api
+
+      # Exactly the packages ondewo-proto-compiler/cpp/Dockerfile installs. libgrpc-dev is needed
+      # in addition to libgrpc++-dev because only it ships gRPCConfig.cmake, which the generated
+      # package's find_dependency(gRPC CONFIG) resolves.
+      - name: Install the protobuf / gRPC C++ toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config \
+            protobuf-compiler libprotobuf-dev \
+            protobuf-compiler-grpc libgrpc++-dev libgrpc-dev libabsl-dev
+
+      # Printed before the build so a future runner image bump shows up as a version line in the
+      # log rather than as an inscrutable wall of #error output from the generated headers.
+      - name: Report the toolchain versions the stubs must match
+        run: |
+          cmake --version
+          protoc --version
+          dpkg-query -W -f='libprotobuf-dev ${Version}\n' libprotobuf-dev
+          dpkg-query -W -f='libgrpc++-dev ${Version}\n' libgrpc++-dev
+
+      - name: Build the client library
+        run: make build_library
+
+      - name: Verify the generated code and consume the CMake package
+        run: make test
+
+  lint:
+    name: pre-commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Only the pre-commit-stage hooks run here; giticket and conventional-pre-commit are
+      # commit-msg hooks and are not exercised by --all-files.
+      - name: Run the pre-commit hooks
+        run: |
+          pip install pre-commit
+          pre-commit run --all-files --show-diff-on-failure
