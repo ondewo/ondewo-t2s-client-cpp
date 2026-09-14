@@ -55,6 +55,20 @@ repos:
   # Validating first keeps the check at full strength rather than weakening it: a subject that is
   # not Conventional Commits is still rejected, and on a branch carrying no ticket giticket is a
   # no-op either way (both measured).
+  # strip-ticket-prefix MUST stay first of the three commit-msg hooks. It removes a
+  # `[OND221-2830] ` that a PREVIOUS run added, so conventional-pre-commit judges the
+  # developer's own subject on an amend/reword instead of the decorated one, and giticket
+  # applies the ticket exactly once. Without it `git commit --amend` on a ticket branch is
+  # rejected, and giticket's own idempotency guard never fires (its branch regex demands a
+  # `-` or `_` after the ticket; the `]` of an existing prefix is neither).
+  - repo: local
+    hooks:
+      - id: strip-ticket-prefix
+        name: strip a previously applied [TICKET] prefix
+        entry: .hooks/strip-ticket-prefix.py
+        language: python
+        stages: [ commit-msg ]
+
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v4.4.0
     hooks:
