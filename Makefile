@@ -50,7 +50,7 @@ ONDEWO_T2S_VERSION=6.6.0
 # Submodule pins. Both are checked out by `make checkout_defined_submodule_versions`, which is
 # part of `make build`, so a build is always reproducible from these two lines alone.
 ONDEWO_T2S_API_GIT_BRANCH=tags/6.6.0
-ONDEWO_PROTO_COMPILER_GIT_BRANCH=tags/5.15.0
+ONDEWO_PROTO_COMPILER_GIT_BRANCH=tags/5.15.1
 
 # You need to setup an access token at https://github.com/settings/tokens - permissions are important
 GITHUB_GH_TOKEN?=ENTER_YOUR_TOKEN_HERE
@@ -391,6 +391,15 @@ checkout_defined_submodule_versions: update_submodules ## Check out the submodul
 
 release: ## Automate the entire release process
 	@echo "$(BLUE)[INFO]$(NC) Start Release"
+# FIRST, before anything is built, committed, branched, tagged or pushed. Everything that can
+# be refuted without touching origin is refuted here, because none of what follows can be taken
+# back: create_release_branch and create_release_tag push to origin, `spc` then refuses every
+# retry for as long as that branch and that tag exist, and a published tag is what consumers
+# pin. The release credential used to be exercised for the first time in `login_to_gh`, which
+# runs inside `push_to_gh` - three steps AFTER the branch and the tag are already on origin, so
+# a missing token left an immovable tag behind and blocked its own retry.
+	make check_release_credentials
+	make check_release_notes
 	make build
 	-make precommit_hooks_run_all_files
 	make test
@@ -427,14 +436,40 @@ create_release_tag: ## Create Release Tag and push it to origin
 	git tag -a ${ONDEWO_T2S_VERSION} -m "release/${ONDEWO_T2S_VERSION}"
 	git push origin ${ONDEWO_T2S_VERSION}
 
-login_to_gh: ## Login to Github CLI with Access Token
+check_release_credentials: ## Fail loudly when the GitHub release credential is unset or still the placeholder
+# The value is only ever tested, never printed - not even partially. The placeholder counts as
+# unset: `$(if $(GITHUB_GH_TOKEN),...)` alone reports the default ENTER_YOUR_TOKEN_HERE as "set"
+# and would let a release run all the way to the `gh auth login` below before failing.
 	@if [ -z "${GITHUB_GH_TOKEN}" ] || [ "${GITHUB_GH_TOKEN}" = "ENTER_YOUR_TOKEN_HERE" ]; then \
-		echo "$(RED)[ERROR]$(NC) GITHUB_GH_TOKEN is not set - create one at https://github.com/settings/tokens"; \
+		echo "$(RED)[ERROR]$(NC) refusing to release - GITHUB_GH_TOKEN is not set"; \
+		echo "        use 'make ondewo_release', which reads it from ${DEVOPS_ACCOUNT_GIT}/account_github.env,"; \
+		echo "        or create a token at https://github.com/settings/tokens and pass GITHUB_GH_TOKEN=<token>"; \
 		exit 1; \
 	fi
+	@echo "$(GREEN)[SUCCESS]$(NC) the GitHub release credential is set"
+
+# Depends on the check so that calling login_to_gh on its own is guarded too - `release` has
+# already run it by then, and make will not run it twice within one invocation.
+login_to_gh: check_release_credentials ## Login to Github CLI with Access Token
 	@echo "${GITHUB_GH_TOKEN}" | gh auth login -p ssh --with-token
 
-build_gh_release: ## Generate Github Release with CLI
+check_release_notes: ## Assert RELEASE.md carries an entry for ONDEWO_T2S_VERSION
+# $(CURRENT_RELEASE_NOTES) is a perl flip-flop over RELEASE.md, so a forgotten entry - or a
+# heading whose wording drifted away from what that flip-flop greps for - slices to the empty
+# string. `gh release create -n ""` does not complain about that: it succeeds and publishes an
+# EMPTY release, which is then only noticed by whoever reads the release page. The tag is
+# immutable by then and `spc` blocks the retry, so this has to refuse before anything is pushed.
+	@notes="$(CURRENT_RELEASE_NOTES)"; \
+	if [ -z "$$notes" ]; then \
+		echo "$(RED)[ERROR]$(NC) RELEASE.md has no '## Release ONDEWO T2S C++ Client ${ONDEWO_T2S_VERSION}' entry"; \
+		echo "        The GitHub release would be created with empty notes - add the entry first."; \
+		exit 1; \
+	fi; \
+	echo "$(GREEN)[SUCCESS]$(NC) RELEASE.md has release notes for ${ONDEWO_T2S_VERSION}"
+
+# The guard is a prerequisite, not just a step of `release`, so that a hand-run
+# `make build_gh_release` cannot publish an empty release either.
+build_gh_release: check_release_notes ## Generate Github Release with CLI
 	gh release create --repo $(GH_REPO) "$(ONDEWO_T2S_VERSION)" -n "$(CURRENT_RELEASE_NOTES)" -t "Release ${ONDEWO_T2S_VERSION}"
 
 ########################################################

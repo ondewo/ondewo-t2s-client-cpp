@@ -47,7 +47,7 @@ jobs:
           echo "ONDEWO_GH_TOKEN is configured"
 
       # No submodules: the stubs are committed, and nothing here regenerates them.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The archive is named after ONDEWO_T2S_VERSION, not after the tag, so a tag that disagrees
       # with the Makefile would publish an asset under the wrong version. Catch that here instead
@@ -96,18 +96,41 @@ jobs:
       - name: Build and verify the release archive
         run: make publish_dry_run
 
+      # POLL-THEN-PROCEED. `make release` pushes the tag - which is what started this run - and
+      # creates the GitHub release a few seconds later, so the release is normally NOT there yet
+      # when this job gets here. Waiting for it is the whole point; the two ways to get that
+      # wrong are both guarded against below.
+      #
+      #  1. It must never degrade into a skip. "Release not there" is not "nothing to do": the
+      #     next step is the upload, and a tag pushed without any release ever being created has
+      #     to end the run loudly rather than quietly publish nothing. Hence the `exit 1` after
+      #     the loop, not a `continue-on-error`.
+      #  2. It must not swallow every gh failure into the retry. An expired token, a rate limit
+      #     or a network error looks exactly like a missing release to a bare
+      #     `gh release view ... >/dev/null 2>&1`, and retrying it for five minutes before
+      #     reporting "no GitHub release" points whoever reads the log at the wrong problem. So
+      #     gh's stderr is captured (`2>&1 >/dev/null` - stderr to the capture FIRST, then stdout
+      #     to /dev/null; the reverse order captures stdout instead) and only the literal
+      #     "release not found" is retried. Anything else fails on the first attempt, quoting
+      #     what gh actually said.
+      #
+      # 30 attempts x 10s = the 5 minutes the timeout message names; keep the three in step.
       - name: Wait for the GitHub release to exist
         env:
           GH_TOKEN: ${{ secrets.ONDEWO_GH_TOKEN }}
         run: |
-          # `make release` pushes the tag - which started this run - and creates the GitHub
-          # release a few seconds later, so the release is usually not there yet. Poll rather
-          # than race. A tag pushed without any release ever being created fails here, loudly.
           for attempt in $(seq 1 30); do
-            if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            if err="$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" 2>&1 >/dev/null)"; then
               echo "release ${GITHUB_REF_NAME} exists"
               exit 0
             fi
+            case "${err}" in
+              *"release not found"*) ;;
+              *)
+                echo "::error title=Cannot query the release::gh failed to read release ${GITHUB_REF_NAME} on ${GITHUB_REPOSITORY}, and the failure is not a missing release, so waiting longer cannot help: ${err}"
+                exit 1
+                ;;
+            esac
             echo "attempt ${attempt}/30: release ${GITHUB_REF_NAME} does not exist yet, retrying in 10s"
             sleep 10
           done

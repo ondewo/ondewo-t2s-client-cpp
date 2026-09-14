@@ -286,4 +286,19 @@ whichever gets there first wins, and the other replaces its own identical asset.
 anywhere is the GitHub token (`GITHUB_GH_TOKEN`, read from `account_github.env` in the devops-accounts repo by
 `make ondewo_release`); there is no registry account.
 
+The workflow authenticates with the repository secret **`ONDEWO_GH_TOKEN`** - the same value as
+`GITHUB_GH_TOKEN` above. It cannot be called `GITHUB_GH_TOKEN`, because GitHub reserves every secret name
+starting with `GITHUB_`; `ONDEWO_GH_TOKEN` is the name every ONDEWO client repository uses for it.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Commit messages follow
+[Conventional Commits](https://www.conventionalcommits.org/) (`feat: …`, `fix(scope): …`, `docs: …`); do **not**
+write the JIRA ticket prefix by hand - the `giticket` pre-commit hook reads it from the branch name and prepends
+`[<ticket>]` on commit.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).
+
 [//]: # (Generated with the ONDEWO proto compiler - see https://github.com/ondewo/ondewo-proto-compiler)

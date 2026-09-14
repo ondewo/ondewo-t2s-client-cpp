@@ -41,6 +41,26 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
 
+  # THE ORDER OF THE NEXT TWO IS LOAD-BEARING. Both run at the commit-msg stage, pre-commit runs
+  # commit-msg hooks in declaration order, and each one sees what the previous one left in the
+  # message file. giticket REWRITES the subject to "[OND221-2830] feat: ..." and
+  # conventional-pre-commit VALIDATES it - so with giticket first the validator is handed a
+  # subject that starts with the ticket and rejects it, and every commit on a ticket branch
+  # fails. Measured both ways in a throwaway repo, on a branch named feature/OND221-2830-x,
+  # committing "feat: add a thing":
+  #   giticket -> conventional : giticket Passed, Conventional Commit FAILED
+  #                              ("[Bad commit message] >> [OND221-2830] feat: add a thing"),
+  #                              commit refused, HEAD unchanged
+  #   conventional -> giticket : both Passed, commit lands as "[OND221-2830] feat: add a thing"
+  # Validating first keeps the check at full strength rather than weakening it: a subject that is
+  # not Conventional Commits is still rejected, and on a branch carrying no ticket giticket is a
+  # no-op either way (both measured).
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [ commit-msg ]
+
   - repo: https://github.com/milin/giticket
     rev: '1.92'
     hooks:
@@ -48,9 +68,3 @@ repos:
         args: [ '--regex=(?:(?:feature|bugfix|support|hotfix)/)?(OND[0-9]{3}-[0-9]{1,5})[_-][\w-]+',
                 '--format=[{ticket}] {commit_msg}',
                 '--mode=regex_match' ]
-
-  - repo: https://github.com/compilerla/conventional-pre-commit
-    rev: v4.4.0
-    hooks:
-      - id: conventional-pre-commit
-        stages: [ commit-msg ]

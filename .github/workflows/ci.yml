@@ -33,7 +33,7 @@ jobs:
       # ondewo-proto-compiler is only needed to rebuild the docker image - which this workflow
       # deliberately does not do, because compiling .proto files is a separate, slow concern.
       # Everything below builds and tests the code that is in this repository.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Exactly the packages ondewo-proto-compiler/cpp/Dockerfile installs, plus GoogleTest and
       # gcovr for the test suite. libgrpc-dev is needed in addition to libgrpc++-dev because
@@ -85,7 +85,7 @@ jobs:
 
       - name: Upload the coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: coverage.txt
@@ -113,7 +113,7 @@ jobs:
       # there is no archive, and an upload step that then fails on if-no-files-found would only
       # bury the real error under a second one.
       - name: Upload the release archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-archive
           path: |
@@ -127,9 +127,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
