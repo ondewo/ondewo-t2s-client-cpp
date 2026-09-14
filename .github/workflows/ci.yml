@@ -97,6 +97,31 @@ jobs:
       - name: Consume the installed CMake package
         run: make smoke_test
 
+      # The packaging path, exercised on every push and needing no credentials at all.
+      # build_package stages the install tree into dist/<library>-<version>-<platform>.tar.gz;
+      # verify_package extracts that tarball into a throwaway tree and builds
+      # tests/package-consume against it - find_package() resolved from the extracted archive
+      # (and asserted to come from there), umbrella header included, exported ondewo:: target
+      # linked with the whole archive forced in. publish_dry_run is `make publish` minus the
+      # `gh release upload`, so what CI proves here is exactly what a release publishes.
+      - name: Build and consume the release archive (publish dry-run)
+        run: make publish_dry_run
+
+      # The exact bytes a release would attach, downloadable from the run - which also makes an
+      # accidental change in the archive's size or contents visible without cutting a release.
+      # Deliberately not `if: always()` like the coverage report above: when the dry-run fails
+      # there is no archive, and an upload step that then fails on if-no-files-found would only
+      # bury the real error under a second one.
+      - name: Upload the release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-archive
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
+
   lint:
     name: pre-commit
     runs-on: ubuntu-24.04

@@ -65,6 +65,49 @@ To **regenerate** the stubs you additionally need Docker.
 
 ## Setup
 
+### Install the published release archive
+
+C++ has no package registry, so every [GitHub release](https://github.com/ondewo/ondewo-t2s-client-cpp/releases)
+carries the built package as an asset: `ondewo_t2s_client-<version>-<platform>.tar.gz`, plus a
+`.sha256` next to it. The archive is the CMake install tree - the static library, the public headers and the
+package-config files - so consuming it is one `find_package`, with no compiler run and no Docker.
+
+```shell
+version=6.6.0
+platform=linux-x86_64     ## uname -s | tr A-Z a-z, then uname -m
+archive=ondewo_t2s_client-${version}-${platform}.tar.gz
+
+gh release download "${version}" --repo ondewo/ondewo-t2s-client-cpp --pattern "${archive}*"
+sha256sum -c "${archive}.sha256"          ## macOS: shasum -a 256 -c
+tar -xzf "${archive}" -C /opt             ## anywhere - the package is relocatable
+```
+
+Then point CMake at the extracted directory and consume it exactly as you would a system-installed package:
+
+```cmake
+find_package(ondewo_t2s_client CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE ondewo::ondewo_t2s_client)
+```
+
+```shell
+cmake -S . -B build -DCMAKE_PREFIX_PATH=/opt/ondewo_t2s_client-${version}-${platform}
+```
+
+`#include "public-api.h"` then reaches the whole API surface; the exported target carries the include
+directory and re-finds `Protobuf` and `gRPC` on your machine.
+
+Two things the archive does **not** do, both by construction:
+
+- It is a **binary** artifact for one platform, and protobuf gives
+  [no cross-version guarantee](https://protobuf.dev/support/cross-version-runtime-guarantee/) between generated
+  code and runtime. `PACKAGE-INFO.txt` inside the archive records the platform, the `protoc`, the
+  `libprotobuf`/`libgrpc++` and the compiler it was built with - if your protobuf differs, build from source
+  with one of the two options below instead.
+- It is not registered with vcpkg, Conan or any other package manager, and there is nothing to `install` from a
+  registry. The release asset and the git tag are the whole distribution story.
+
+### Build from source
+
 Using CMake `FetchContent` - no Docker, no install step:
 
 ```cmake
@@ -105,6 +148,8 @@ Then, in the consuming project:
 find_package(ondewo_t2s_client CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE ondewo::ondewo_t2s_client)
 ```
+
+### Develop on this repository
 
 Setting up a development checkout of this repository itself:
 
@@ -215,11 +260,30 @@ make test
   includes `public-api.h` and links `ondewo::ondewo_t2s_client`, then compiles and runs it. That is the
   one check that proves the exported CMake package, the umbrella header and the link line all work together
   the way a downstream application uses them.
+- `publish_dry_run` builds the release archive and then consumes it: it extracts the tarball into a throwaway
+  tree and builds `tests/package-consume` against nothing but that - `find_package()` is asserted to resolve
+  inside the extracted archive, and the whole static library is forced into the link, so an incomplete archive
+  fails here rather than after it has been published. It needs no credentials and uploads nothing, and CI runs
+  it on every push.
 
 ## Release
 
-See `RELEASE.md` for the release history and the Makefile's Release chapter for the automation
-(`make ondewo_release`). Releases are published as GitHub releases and git tags; there is no package registry
-for C++.
+See `RELEASE.md` for the release history and the Makefile's Release and Package chapters for the automation
+(`make ondewo_release`). There is no package registry for C++, so a release is a git tag, a GitHub release,
+and the built package attached to it:
+
+| Target                 | What it does                                                                      |
+| ---------------------- | --------------------------------------------------------------------------------- |
+| `make build_package`   | stages the CMake install tree into `dist/<library>-<version>-<platform>.tar.gz` + `.sha256` |
+| `make verify_package`  | extracts that archive and consumes it from an unrelated CMake project              |
+| `make publish_dry_run` | both of the above - the credential-free packaging gate, also run by CI             |
+| `make publish`         | the dry-run, then `gh release upload` of the archive and its checksum              |
+
+`make release` runs `make publish` after `make push_to_gh`, because `gh release upload` needs the release to
+exist. Pushing the version tag additionally starts `.github/workflows/release.yml`, which rebuilds the archive
+on a pinned runner, verifies it the same way and attaches it with the `ONDEWO_GH_TOKEN` repository secret -
+whichever gets there first wins, and the other replaces its own identical asset. The only credential involved
+anywhere is the GitHub token (`GITHUB_GH_TOKEN`, read from `account_github.env` in the devops-accounts repo by
+`make ondewo_release`); there is no registry account.
 
 [//]: # (Generated with the ONDEWO proto compiler - see https://github.com/ondewo/ondewo-proto-compiler)
