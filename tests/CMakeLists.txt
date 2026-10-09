@@ -96,3 +96,8 @@ endif()
 gtest_discover_tests(ondewo_client_tests
   DISCOVERY_TIMEOUT 120
   PROPERTIES TIMEOUT 300)
+
+# RELEASE.md against the Makefile's release-notes slice (the GitHub release body). Shell, perl
+# and make only - no C++ - and product-agnostic, like test_tls.cc.
+add_test(NAME ReleaseNotes.SliceHeadingsAndSeparators
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/test_release_notes.sh" "${CMAKE_CURRENT_SOURCE_DIR}/..")
