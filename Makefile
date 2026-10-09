@@ -103,9 +103,10 @@ PACKAGE_CONSUME_DIR=tests/package-consume
 # the generated root CMakeLists.txt), so it needs its own build tree.
 TEST_DIR=tests
 TEST_BUILD_DIR=build-tests
-# Line-coverage floor for the HAND-WRITTEN sources under tests/. The generated stubs are
-# excluded by construction: the client archive is compiled without --coverage, so no .gcno for
-# a *.pb.cc exists at all, and the gcovr filter below keeps the metric inside tests/.
+# Line-coverage floor for the HAND-WRITTEN sources under tests/ and client/ (the header-only
+# channel helper). The generated stubs are excluded by construction: the client archive is
+# compiled without --coverage, so no .gcno for a *.pb.cc exists at all, and the gcovr filter
+# below keeps the metric inside tests/ and client/.
 COVERAGE_MIN?=100
 
 # Terminate on the ***** separator that delimits release entries, NOT on /\*\*/ - that matches the
@@ -308,10 +309,12 @@ smoke_test: ## Compile and run a tiny program against the installed CMake packag
 	@mkdir -p $(SMOKE_TEST_DIR)
 	@printf '%s\n' \
 		'#include "public-api.h"' \
+		'#include <ondewo/client/channel.h>' \
 		'#include <google/protobuf/stubs/common.h>' \
 		'#include <cstdio>' \
 		'int main() {' \
 		'  GOOGLE_PROTOBUF_VERIFY_VERSION;' \
+		'  ondewo::client::DefaultChannelArguments();' \
 		'  std::puts("ondewo-t2s-client-cpp smoke test OK");' \
 		'  google::protobuf::ShutdownProtobufLibrary();' \
 		'  return 0;' \
@@ -352,7 +355,7 @@ unit_test: ## Build and run the GoogleTest/CTest suite against the installed pac
 # coverage target below turns it on.
 ONDEWO_ENABLE_COVERAGE?=OFF
 
-# Measures HAND-WRITTEN code only. The gcovr filter is tests/ and nothing else, and the client
+# Measures HAND-WRITTEN code only. The gcovr filter is tests/ and client/ and nothing else, and the client
 # archive was compiled without --coverage, so no generated *.pb.cc can contribute a line either
 # way. Anything below $(COVERAGE_MIN) % lines fails the build.
 coverage: ## Run the test suite under gcov and fail if hand-written line coverage drops below COVERAGE_MIN
@@ -365,7 +368,7 @@ coverage: ## Run the test suite under gcov and fail if hand-written line coverag
 	@echo "$(BLUE)[INFO]$(NC) Measuring coverage of the hand-written sources under $(TEST_DIR)/ ..."
 # The report is printed even when the threshold is not met - the table naming the uncovered
 # lines is exactly what is needed then, so the exit code is captured and re-raised afterwards.
-	@gcovr --root . --filter '$(TEST_DIR)/' --print-summary --txt coverage.txt \
+	@gcovr --root . --filter '$(TEST_DIR)/' --filter 'client/' --print-summary --txt coverage.txt \
 		--fail-under-line $(COVERAGE_MIN) $(TEST_BUILD_DIR); \
 	status=$$?; cat coverage.txt; exit $$status
 	@echo "$(GREEN)[SUCCESS]$(NC) Hand-written line coverage is at least $(COVERAGE_MIN) %"

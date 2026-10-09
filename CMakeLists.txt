@@ -58,6 +58,19 @@ target_include_directories("${ONDEWO_LIBRARY_NAME}" PUBLIC
 
 target_link_libraries("${ONDEWO_LIBRARY_NAME}" PUBLIC gRPC::grpc++ protobuf::libprotobuf)
 
+# HAND-WRITTEN addition to the compiler's default build file (it keeps this committed copy on
+# regeneration and writes its own to api/CMakeLists.txt.generated): the header-only channel
+# helper under client/ (TLS / mutual TLS, ondewo/client/channel.h). It is installed into
+# the same include root as the generated headers. Guarded, so the file still builds a tree
+# without client/.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/client/ondewo/client")
+  target_include_directories("${ONDEWO_LIBRARY_NAME}" PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/client>")
+  install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/client/"
+          DESTINATION "include/${ONDEWO_LIBRARY_NAME}"
+          FILES_MATCHING PATTERN "*.h")
+endif()
+
 # The generated headers keep the proto package directory layout and include each other by that
 # same root-relative path, so install the tree as-is. PATTERN "*.pb.h" catches both <name>.pb.h
 # and <name>.grpc.pb.h.

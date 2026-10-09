@@ -37,7 +37,14 @@ add_executable(ondewo_client_tests
   descriptor_probe.cc
   product_config.cc
   test_generated_stubs.cc
+  test_tls.cc
   test_typed_api.cc)
+
+# The hand-written channel helper is header-only. Compile the suite against the SOURCE copy in
+# client/, ahead of the installed one, so `make coverage` measures client/ itself; the
+# smoke test and tests/package-consume include the installed copy.
+target_include_directories(ondewo_client_tests BEFORE PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client")
 
 # -fno-exceptions: nothing in this suite throws or catches - GoogleTest reports failures
 # through its own non-throwing path. Without it every function that returns a container gets
@@ -89,3 +96,8 @@ endif()
 gtest_discover_tests(ondewo_client_tests
   DISCOVERY_TIMEOUT 120
   PROPERTIES TIMEOUT 300)
+
+# RELEASE.md against the Makefile's release-notes slice (the GitHub release body). Shell, perl
+# and make only - no C++ - and product-agnostic, like test_tls.cc.
+add_test(NAME ReleaseNotes.SliceHeadingsAndSeparators
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/test_release_notes.sh" "${CMAKE_CURRENT_SOURCE_DIR}/..")
