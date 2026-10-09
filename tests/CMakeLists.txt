@@ -37,7 +37,14 @@ add_executable(ondewo_client_tests
   descriptor_probe.cc
   product_config.cc
   test_generated_stubs.cc
+  test_tls.cc
   test_typed_api.cc)
+
+# The hand-written channel helper is header-only. Compile the suite against the SOURCE copy in
+# client/, ahead of the installed one, so `make coverage` measures client/ itself; the
+# smoke test and tests/package-consume include the installed copy.
+target_include_directories(ondewo_client_tests BEFORE PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client")
 
 # -fno-exceptions: nothing in this suite throws or catches - GoogleTest reports failures
 # through its own non-throwing path. Without it every function that returns a container gets

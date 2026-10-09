@@ -33,7 +33,7 @@ ONDEWO APIs use [Protocol Buffers](https://github.com/google/protobuf) version 3
 Definition Language (IDL) to define the API interface and the structure of the payload messages. The same
 interface definition is used for the gRPC versions of the API in all languages.
 
-There is **no hand-written code** in this repository. Everything it ships is generated:
+Apart from the header-only channel helper in `client/`, everything this repository ships is generated:
 
 | Path                            | What it is                                                               |
 | ------------------------------- | ------------------------------------------------------------------------ |
@@ -43,6 +43,7 @@ There is **no hand-written code** in this repository. Everything it ships is gen
 | `ondewo-client-config.cmake.in` | template for the installed `<library>-config.cmake`                      |
 | `ondewo-t2s-api/`                   | submodule - the `.proto` source of truth                                 |
 | `ondewo-proto-compiler/`        | submodule - the code generator, pinned to a release tag                  |
+| `client/ondewo/client/channel.h` | **hand-written** - TLS / mutual-TLS channel factory, see [below](#tls-mutual-tls-and-certificates) |
 
 The generated sources are committed deliberately: C++ has no package registry, so a git tag is this client's
 distribution channel and a plain `git clone` has to yield a buildable CMake project.
@@ -199,6 +200,147 @@ int main() {
 }
 ```
 
+To open the channel with TLS or mutual TLS from PEM content, use `<ondewo/client/channel.h>` - see
+[TLS, mutual TLS and certificates](#tls-mutual-tls-and-certificates).
+
+## TLS, mutual TLS and certificates
+
+gRPC encrypts with **TLS**. "SSL" in names such as `grpc::SslCredentials` or `SetSslTargetNameOverride` is legacy
+naming; no SSL protocol version is ever negotiated.
+
+The hand-written, header-only helper `<ondewo/client/channel.h>` (source under `client/`, installed next to
+the generated headers and linked through the same `ondewo::ondewo_t2s_client` target) builds the channel from a
+`ondewo::client::ClientConfig`. It behaves exactly like the other ONDEWO SDKs (reference:
+[ondewo-client-utils-python](https://github.com/ondewo/ondewo-client-utils-python)):
+
+| Mode                               | `use_secure_channel` | Config fields                                                          |
+|------------------------------------|----------------------|------------------------------------------------------------------------|
+| Plaintext (not for production)     | `false`              | none                                                                   |
+| TLS, platform trust store          | `true` (default)     | none (`grpc_cert` empty)                                               |
+| TLS, custom CA                     | `true`               | `grpc_cert` = PEM of the CA that signed the server certificate         |
+| Mutual TLS                         | `true`               | `grpc_cert` (or empty for the trust store) plus `grpc_client_cert` and `grpc_client_key` |
+
+Rules the code enforces:
+
+- The three PEM fields hold **PEM content**, **not file paths**. Read the files yourself (see below).
+- `grpc_client_cert` and `grpc_client_key` go together. Setting only one makes `ValidateConfig` /
+  `CreateChannelCredentials` / `CreateChannel` return `INVALID_ARGUMENT` **before gRPC is called**: grpc-core does
+  not report half an identity, it can `abort()` the whole process. Both empty means server-authenticated TLS.
+- `use_secure_channel = false` with a client certificate returns `INVALID_ARGUMENT` instead of silently dropping
+  the identity. A plaintext channel otherwise works, and writes a warning naming `host:port` to `std::clog`
+  (redirect `std::clog` to route it into your logging).
+- Errors are returned as `grpc::Status`, never thrown, so the header works with `-fno-exceptions`. No error message
+  renders a PEM, a key or the config; they name the field and `host:port`.
+- `ClientConfig::ToString()` / `operator<<` print the certificates as their size only and a non-empty
+  `grpc_client_key` as `***REDACTED***` (an empty one stays empty).
+- A bare IPv6 literal host is bracketed (`::1` connects to `[::1]:50051`); a bracketed host or one with a scheme
+  (`ipv6:[::1]`, `dns:///...`, `unix:/...`) is used as it is.
+- The server certificate is verified against `grpc_cert` (or the trust store), and the host you connect to must
+  match one of the certificate's subject alternative names (SAN). When you connect by IP and the certificate has no
+  IP SAN, set `args.SetSslTargetNameOverride("<name in the SAN>")` on the channel arguments.
+
+```cpp
+#include <fstream>
+#include <iostream>
+#include <iterator>
+#include <memory>
+#include <string>
+
+#include <ondewo/client/channel.h>
+
+#include "public-api.h"
+
+std::string ReadFile(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+int main() {
+  ondewo::client::ClientConfig config;
+  config.host = "10.0.0.5";
+  config.port = "50051";
+  config.grpc_cert = ReadFile("certs/ca.pem");
+  config.grpc_client_cert = ReadFile("certs/client.pem");  // leave both out for server-authenticated TLS
+  config.grpc_client_key = ReadFile("certs/client.key");
+
+  grpc::ChannelArguments args = ondewo::client::DefaultChannelArguments();
+  args.SetSslTargetNameOverride("t2s.example.internal");  // only when connecting by IP
+
+  std::shared_ptr<grpc::Channel> channel;
+  const grpc::Status status = ondewo::client::CreateChannel(config, args, &channel);
+  if (!status.ok()) {
+    std::cerr << status.error_message() << '\n';  // never contains a PEM or the key
+    return 1;
+  }
+  // One channel serves every stub of the server: one connection, one TLS handshake.
+  auto stub = ondewo::t2s::Text2Speech::NewStub(channel);
+  return 0;
+}
+```
+
+`CreateChannel(config, &channel)` uses `DefaultChannelArguments()` unchanged. Those are the channel options of the
+other ONDEWO SDKs: maximum message size 2^31-1 both ways, `keepalive_time_ms=30000`, `keepalive_timeout_ms=20000`,
+`keepalive_permit_without_calls=0`, `http2.max_pings_without_data=2`, `http2.ping_timeout_ms=20000` and
+`max_reconnect_backoff_ms=5000`. Gaps: gRPC 1.51 (the version the stubs are pinned to) does not know
+`grpc.http2.ping_timeout_ms` and ignores it - it waits `keepalive_timeout_ms` for a ping reply instead, which is the
+same 20 s; and the per-method retry policy of the Python SDKs (retry idempotent methods only) is not applied, so only
+gRPC's transparent retries are active. Add a `grpc.service_config` to the arguments if you need retries.
+
+### A test PKI with openssl
+
+A CA, a server certificate with SANs, and a client certificate with the `clientAuth` extended key usage. For tests
+only: the keys are unencrypted. `tests/test_tls.cc` generates the same PKI at test time.
+
+```bash
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 365 \
+  -subj "/CN=Test CA" -keyout ca.key -out ca.pem
+
+printf 'subjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1\nextendedKeyUsage=serverAuth\n' > server.ext
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -subj "/CN=localhost" -keyout server.key -out server.csr
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 365 \
+  -extfile server.ext -out server.pem
+
+printf 'extendedKeyUsage=clientAuth\n' > client.ext
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+  -subj "/CN=my-client" -keyout client.key -out client.csr
+openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 365 \
+  -extfile client.ext -out client.pem
+
+chmod 600 *.key
+openssl verify -CAfile ca.pem server.pem client.pem
+```
+
+The client then uses `ca.pem` / `client.pem` / `client.key`; a server that requires client certificates uses
+`server.pem` / `server.key` and trusts `ca.pem` for its clients.
+
+### TLS security notes
+
+- `ClientConfig` holds the private key in memory as plain text. Load it from a file with mode `0600` or from a
+  secret store at startup; never commit it and never hard-code it.
+- `ToString()` redacts the key, but any serialization of the config you write yourself (JSON, a settings file)
+  carries it in clear text unless you leave it out: treat such a file as a secret.
+- Do not log the raw fields; log `config` (its `operator<<`) or `config.HostAndPort()`.
+
+### TLS troubleshooting
+
+A failed handshake comes back as status `UNAVAILABLE` on the first RPC; the cause is in `status.error_message()` and
+in the gRPC log (`GRPC_VERBOSITY=debug GRPC_TRACE=tsi` for more):
+
+- **`Ssl handshake failed: SSL_ERROR_SSL: ... certificate verify failed`**: `grpc_cert` is not the CA that issued the server certificate, or the server does not send its intermediate
+  certificates. With an empty `grpc_cert` the server's CA is not in the platform trust store.
+- **`Peer name <host> is not in peer certificate`** (newer gRPC: `Hostname Verification Check failed`): the host
+  you connect to is not in the server certificate's SAN. Connect by a name in the SAN, add the SAN, or set
+  `SetSslTargetNameOverride`.
+- **`Socket closed`** (or another `UNAVAILABLE`) against a server that requires client certificates: no client
+  certificate was presented, or one the server's CA did not issue. The server log names the reason (e.g.
+  `peer did not return a certificate` / `certificate verify failed`). Set `grpc_client_cert` / `grpc_client_key`.
+- **`empty address list`** with `Could not load any root certificate` / `Invalid cert chain file` /
+  `Handshaker factory creation failed` in the gRPC log: `grpc_cert`, `grpc_client_cert` or `grpc_client_key` holds
+  something that is not PEM, typically a file path. Pass the file's content instead.
+- **`INVALID_ARGUMENT`** from `CreateChannel` itself: half a client identity, or a client identity on a plaintext
+  channel - the message says which.
+
 ## Regenerating the stubs
 
 Generation runs entirely inside the `ondewo-cpp-proto-compiler` docker image, so no protoc, no gRPC plugin and
@@ -265,6 +407,13 @@ make test
   inside the extracted archive, and the whole static library is forced into the link, so an incomplete archive
   fails here rather than after it has been published. It needs no credentials and uploads nothing, and CI runs
   it on every push.
+
+`tests/test_tls.cc` exercises `<ondewo/client/channel.h>` against real in-process gRPC servers with a PKI the
+openssl CLI generates at test time (no key is committed): TLS, mutual TLS, a server refusing a client without a
+certificate or with one from an unrelated CA, a wrong CA, the system trust store, a non-PEM CA, CRLF PEMs, server
+name override and `[::1]` (skipped without IPv6 loopback), plus half a client identity, plaintext with an identity,
+the insecure warning and the redaction - no PEM, key or config in any message. `make coverage` holds `client/` to
+the same 100 % line floor as `tests/`.
 
 ## Release
 

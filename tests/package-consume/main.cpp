@@ -12,6 +12,9 @@
 
 #include "public-api.h"
 
+// The hand-written channel helper is installed beside the generated headers.
+#include <ondewo/client/channel.h>
+
 int main() {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
 
@@ -24,6 +27,14 @@ int main() {
   if (file == nullptr) {
     std::fprintf(stderr, "%s is not in the descriptor pool - the release archive ships no stubs\n",
                  ONDEWO_PROBE_PROTO_FILE);
+    return 1;
+  }
+
+  // ... and the channel helper refuses half a client identity without calling gRPC.
+  ondewo::client::ClientConfig config;
+  config.grpc_client_cert = "cert";
+  if (ondewo::client::ValidateConfig(config).ok()) {
+    std::fprintf(stderr, "ondewo/client/channel.h accepted half a client identity\n");
     return 1;
   }
 
