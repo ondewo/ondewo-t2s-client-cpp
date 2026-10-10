@@ -24,6 +24,9 @@ lib/
 # Smoke-test scratch directory created and removed by `make smoke_test`
 .smoke-test/
 
+# The compiler image's own CMakeLists.txt / ondewo-client-config.cmake.in
+api/*.generated
+
 # Release archive built by `make build_package` and the throwaway tree `make verify_package`
 # extracts it into - both are build output and are published as GitHub release assets, never
 # committed
