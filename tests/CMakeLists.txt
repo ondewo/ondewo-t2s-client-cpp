@@ -101,3 +101,9 @@ gtest_discover_tests(ondewo_client_tests
 # and make only - no C++ - and product-agnostic, like test_tls.cc.
 add_test(NAME ReleaseNotes.SliceHeadingsAndSeparators
   COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/test_release_notes.sh" "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# Release credentials never reach a process argv: the Makefile and the workflows are scanned for
+# make-expanded secrets, `docker run -e NAME=<value>`, `make release NAME=<value>` and
+# `${{ secrets.X }}` inside run: scripts. Shell and perl only - no C++ - and product-agnostic.
+add_test(NAME ReleaseHygiene.CredentialsStayOffArgv
+  COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/test_release_makefile_hygiene.sh" "${CMAKE_CURRENT_SOURCE_DIR}/..")
