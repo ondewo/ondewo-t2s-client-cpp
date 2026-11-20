@@ -45,12 +45,12 @@ export
 # CMake's project(VERSION ...) and write_basic_package_version_file() only accept a dotted
 # numeric MAJOR.MINOR.PATCH here - a pre-release suffix such as 1.2.0-rc1 aborts the configure
 # step, so the compiler image rejects it up front.
-ONDEWO_T2S_VERSION=6.6.1
+ONDEWO_T2S_VERSION=6.7.0
 
 # Submodule pins. Both are checked out by `make checkout_defined_submodule_versions`, which is
 # part of `make build`, so a build is always reproducible from these two lines alone.
-ONDEWO_T2S_API_GIT_BRANCH=tags/6.6.0
-ONDEWO_PROTO_COMPILER_GIT_BRANCH=tags/5.16.0
+ONDEWO_T2S_API_GIT_BRANCH=tags/6.7.0
+ONDEWO_PROTO_COMPILER_GIT_BRANCH=tags/5.17.0
 
 # You need to setup an access token at https://github.com/settings/tokens - permissions are important
 GITHUB_GH_TOKEN?=ENTER_YOUR_TOKEN_HERE

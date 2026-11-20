@@ -2,6 +2,15 @@
 
 *****************
 
+## Release ONDEWO T2S C++ Client 6.7.0
+
+### Improvements
+
+* Tracking API Version [6.7.0](https://github.com/ondewo/ondewo-t2s-api/releases/tag/6.7.0) ( [Documentation](https://ondewo.github.io/ondewo-t2s-api/) )
+* [[OND236-120]](https://ondewo.atlassian.net/browse/OND236-120) Generated with ondewo-proto-compiler 5.17.0 (protoc 35.1). Runtime unchanged: Debian trixie protobuf 3.21.12 / grpc 1.51.1.
+
+*****************
+
 ## Release ONDEWO T2S C++ Client 6.6.1
 
 ### New Features
