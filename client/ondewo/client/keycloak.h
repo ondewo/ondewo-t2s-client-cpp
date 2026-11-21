@@ -119,7 +119,8 @@ struct KeycloakTimings {
   // The whole token-endpoint call (connect + read). Must stay below expiry_leeway_s: the provider
   // lock is held for one call.
   double http_timeout_s = 10.0;
-  // A quoted error body is truncated to this many bytes.
+  // A quoted error body is truncated to this many characters (UTF-8 code points, as python's
+  // body[:500]), never inside a multi-byte character.
   std::size_t max_error_body_chars = 500;
   // Bounded wait for the background thread on Stop().
   double thread_join_timeout_s = 5.0;
@@ -284,12 +285,17 @@ inline std::string DescribeException(const std::exception_ptr& error) {
   }
 }
 
-// body truncated to max_bytes, cut back to a UTF-8 character boundary.
-inline std::string TruncateBody(const std::string& body, std::size_t max_bytes) {
-  if (body.size() <= max_bytes) return body;
-  std::size_t end = max_bytes;
-  while (end > 0 && (static_cast<unsigned char>(body[end]) & 0xC0) == 0x80) --end;
-  return body.substr(0, end);
+// The first max_chars characters of body (python's body[:max_chars]): a character is a UTF-8
+// code point, counted by its lead byte, so a multi-byte character is never cut in half and counts
+// once. A byte that is not valid UTF-8 counts as one character.
+inline std::string TruncateBody(const std::string& body, std::size_t max_chars) {
+  std::size_t characters = 0;
+  for (std::size_t index = 0; index < body.size(); ++index) {
+    if ((static_cast<unsigned char>(body[index]) & 0xC0) == 0x80) continue;
+    if (characters == max_chars) return body.substr(0, index);
+    ++characters;
+  }
+  return body;
 }
 
 // Parses a numeric string as python's float() does for the forms Keycloak could send
@@ -383,12 +389,20 @@ inline std::string Sha256Hex(const std::string& input) {
 // The stop flag of one provider, shared with its thread so neither keeps the other alive.
 class KeycloakStopSignal {
  public:
-  void Stop() {
+  // closed: Stop() of the provider (it is never handed to a new client again); false for the
+  // loop's own end at the token_expiration_in_s deadline, which leaves the provider shareable.
+  void Stop(bool closed = false) {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       stopped_ = true;
+      closed_ = closed_ || closed;
     }
     changed_.notify_all();
+  }
+
+  bool IsClosed() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return closed_;
   }
 
   bool IsStopped() const {
@@ -424,6 +438,7 @@ class KeycloakStopSignal {
   mutable std::mutex mutex_;
   std::condition_variable changed_;
   bool stopped_ = false;
+  bool closed_ = false;
   bool finished_ = false;
 };
 
@@ -501,7 +516,7 @@ class KeycloakTokenProvider {
   // itself, interrupts a pending (backoff) wait so no further request is sent, and waits for the
   // thread at most KeycloakTimings::thread_join_timeout_s. The per-call path keeps working.
   void Stop() {
-    stop_->Stop();
+    stop_->Stop(/*closed=*/true);
     std::thread thread;
     {
       std::lock_guard<std::mutex> lock(thread_mutex_);
@@ -518,7 +533,12 @@ class KeycloakTokenProvider {
 
   void Close() { Stop(); }
 
+  // True once the background refresh has ended: Stop(), or the token_expiration_in_s deadline.
   bool stopped() const { return stop_->IsStopped(); }
+
+  // True once Stop() / Close() was called. Only such a provider is never shared again; one whose
+  // deadline lapsed is still handed out, as in every other SDK.
+  bool closed() const { return stop_->IsClosed(); }
 
   // True while the background thread runs.
   bool background_refresh_running() const {
@@ -838,9 +858,10 @@ struct KeycloakProviderRegistry {
 
 // The shared provider of config's credentials: the live one when a channel already holds it, else
 // a new one (logged in under the registry lock, so concurrent first use logs in once). Held weakly:
-// it lives as long as a channel or a caller holds it, and a stopped provider is never handed out
-// again. Throws like KeycloakTokenProvider::Create(). The options of the call that CREATES the
-// provider apply; later callers share it as it is.
+// it lives as long as a channel or a caller holds it, and a closed (Stop()) provider is never
+// handed out again; one whose token_expiration_in_s deadline lapsed still is. Throws like
+// KeycloakTokenProvider::Create(). The options of the call that CREATES the provider apply; later
+// callers share it as it is.
 inline std::shared_ptr<KeycloakTokenProvider> GetKeycloakTokenProvider(const ClientConfig& config,
                                                                        const KeycloakProviderOptions& options) {
   const KeycloakCredentials credentials = KeycloakCredentialsFrom(config);
@@ -853,7 +874,7 @@ inline std::shared_ptr<KeycloakTokenProvider> GetKeycloakTokenProvider(const Cli
   const auto found = registry.providers.find(key);
   if (found != registry.providers.end()) {
     std::shared_ptr<KeycloakTokenProvider> provider = found->second.lock();
-    if (provider && !provider->stopped()) return provider;
+    if (provider && !provider->closed()) return provider;
   }
   std::shared_ptr<KeycloakTokenProvider> provider = KeycloakTokenProvider::Create(credentials, options);
   registry.providers[key] = provider;

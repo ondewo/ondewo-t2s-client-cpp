@@ -695,12 +695,40 @@ TEST(KeycloakValidation, AHugeErrorPageIsTruncatedInTheMessage) {
   EXPECT_TRUE(Contains(error->what(), "Keycloak token login failed with status 502: <html>xxx")) << error->what();
 }
 
-// T30, at a UTF-8 boundary: a multi-byte character is never cut in half.
-TEST(KeycloakValidation, TheTruncationNeverSplitsAUtf8Character) {
+// T30, at a UTF-8 boundary: the cut counts CHARACTERS (python's body[:500]), so a multi-byte
+// character counts once and is never cut in half.
+TEST(KeycloakValidation, TheTruncationCountsCharactersAndNeverSplitsOne) {
+  using ondewo::client::internal::TruncateBody;
   const std::string body = std::string(499, 'x') + "\xc3\xa9" + "tail";
-  EXPECT_EQ(ondewo::client::internal::TruncateBody(body, 500), std::string(499, 'x'));
-  EXPECT_EQ(ondewo::client::internal::TruncateBody(body, 501), std::string(499, 'x') + "\xc3\xa9");
-  EXPECT_EQ(ondewo::client::internal::TruncateBody("short", 500), "short");
+  EXPECT_EQ(TruncateBody(body, 500), std::string(499, 'x') + "\xc3\xa9");
+  EXPECT_EQ(TruncateBody(body, 501), std::string(499, 'x') + "\xc3\xa9" + "t");
+  EXPECT_EQ(TruncateBody(body, 499), std::string(499, 'x'));
+  EXPECT_EQ(TruncateBody("short", 500), "short");
+  EXPECT_EQ(TruncateBody("", 500), "");
+  EXPECT_EQ(TruncateBody("abc", 0), "");
+  // Exactly max characters: nothing is cut.
+  EXPECT_EQ(TruncateBody(std::string(500, 'x'), 500), std::string(500, 'x'));
+}
+
+// T30 with a body of multi-byte characters only: 500 characters survive, as in every other SDK
+// (a byte budget would keep 250 two-byte or 125 four-byte characters).
+TEST(KeycloakValidation, AMultiByteBodyKeepsFiveHundredCharacters) {
+  using ondewo::client::internal::TruncateBody;
+  std::string two_byte;
+  std::string four_byte;
+  for (int i = 0; i < 600; ++i) {
+    two_byte += "\xc3\xa9";             // U+00E9
+    four_byte += "\xf0\x9f\x98\x80";  // U+1F600
+  }
+  EXPECT_EQ(TruncateBody(two_byte, 500), two_byte.substr(0, 1000));
+  EXPECT_EQ(TruncateBody(four_byte, 500), four_byte.substr(0, 2000));
+  // A stray continuation byte at the start belongs to no character and is kept with the first.
+  EXPECT_EQ(TruncateBody("\x80" + std::string(3, 'y'), 2), "\x80yy");
+  const std::string page = two_byte;
+  const auto error = AuthErrorOf([&] { Build({Answer(502, page)}); });
+  ASSERT_TRUE(error);
+  EXPECT_TRUE(Contains(error->what(), "failed with status 502: " + two_byte.substr(0, 1000)));
+  EXPECT_FALSE(Contains(error->what(), two_byte.substr(0, 1002)));
 }
 
 // T31, plus an empty and a non-string access_token.
@@ -1262,6 +1290,33 @@ TEST(KeycloakRegistry, AStoppedOrDroppedProviderIsNeverHandedToANewClient) {
   const auto third = ondewo::client::GetKeycloakTokenProvider(config, RegistryOptions(transport));
   EXPECT_FALSE(third->stopped());
   EXPECT_EQ(transport->calls().size(), 3u);
+}
+
+// A provider whose token_expiration_in_s deadline lapsed is still handed out (python, nodejs, ts,
+// go, java, csharp, rust and php alike): only Stop() takes one out of the registry.
+TEST(KeycloakRegistry, ADeadlineLapsedProviderIsStillShared) {
+  const auto transport = Fake({Token("acc-1", "60")});
+  const auto clock = std::make_shared<Clock>();
+  ClientConfig config = KeycloakConfig("t54-lapsed");
+  config.token_expiration_in_s = 100;
+  KeycloakProviderOptions options = RegistryOptions(transport);
+  options.time_fn = [clock] { return clock->now; };
+  options.wait_fn = [clock](double /*delay*/) {
+    clock->now += 1000.0;  // past the deadline in one wait: no refresh is due
+    return false;
+  };
+  const auto first = ondewo::client::GetKeycloakTokenProvider(config, options);
+  ondewo::client::internal::RunKeycloakRefreshLoop(first);
+  ASSERT_GE(clock->now, 1100.0);
+  EXPECT_TRUE(first->stopped()) << "the loop did not end at the deadline";
+  EXPECT_FALSE(first->closed());
+  const auto second = ondewo::client::GetKeycloakTokenProvider(config, options);
+  EXPECT_EQ(first, second);
+  EXPECT_EQ(transport->calls().size(), 1u) << "a lapsed provider must not trigger a second login";
+  second->Stop();
+  EXPECT_TRUE(second->closed());
+  const auto third = ondewo::client::GetKeycloakTokenProvider(config, options);
+  EXPECT_NE(third, second);
 }
 
 // ------------------------------------------------------------------------------------------
