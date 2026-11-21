@@ -36,7 +36,8 @@ jobs:
       - uses: actions/checkout@v7
 
       # Exactly the packages ondewo-proto-compiler/cpp/Dockerfile installs, plus GoogleTest and
-      # gcovr for the test suite. libgrpc-dev is needed in addition to libgrpc++-dev because
+      # gcovr for the test suite, and libcurl for the Keycloak transport the suite exercises
+      # (client/ondewo/client/keycloak_curl.h; the client library itself does not link it). libgrpc-dev is needed in addition to libgrpc++-dev because
       # only it ships gRPCConfig.cmake, which the generated package's find_dependency(gRPC
       # CONFIG) resolves.
       - name: Install the protobuf / gRPC C++ toolchain
@@ -46,7 +47,7 @@ jobs:
             build-essential cmake pkg-config \
             protobuf-compiler libprotobuf-dev \
             protobuf-compiler-grpc libgrpc++-dev libgrpc-dev libabsl-dev \
-            libgtest-dev gcovr
+            libgtest-dev gcovr libcurl4-openssl-dev
 
       # The committed gencode was emitted by protoc 3.21.12 and refuses to compile against a
       # runtime outside 3.21.x. Assert that here so a runner image bump fails with a sentence

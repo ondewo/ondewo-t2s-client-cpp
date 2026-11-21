@@ -310,11 +310,13 @@ smoke_test: ## Compile and run a tiny program against the installed CMake packag
 	@printf '%s\n' \
 		'#include "public-api.h"' \
 		'#include <ondewo/client/channel.h>' \
+		'#include <ondewo/client/keycloak.h>' \
 		'#include <google/protobuf/stubs/common.h>' \
 		'#include <cstdio>' \
 		'int main() {' \
 		'  GOOGLE_PROTOBUF_VERIFY_VERSION;' \
 		'  ondewo::client::DefaultChannelArguments();' \
+		'  if (ondewo::client::KeycloakTimings().expiry_leeway_s != 30.0) return 1;' \
 		'  std::puts("ondewo-t2s-client-cpp smoke test OK");' \
 		'  google::protobuf::ShutdownProtobufLibrary();' \
 		'  return 0;' \
@@ -357,7 +359,10 @@ ONDEWO_ENABLE_COVERAGE?=OFF
 
 # Measures HAND-WRITTEN code only. The gcovr filter is tests/ and client/ and nothing else, and the client
 # archive was compiled without --coverage, so no generated *.pb.cc can contribute a line either
-# way. Anything below $(COVERAGE_MIN) % lines fails the build.
+# way. Anything below $(COVERAGE_MIN) % lines fails the build. --exclude-noncode-lines drops lines that
+# hold no statement (a lone closing brace): in the Keycloak test binary, which is compiled WITH
+# exceptions, gcc pins every cleanup landing pad to the closing brace of its scope, and no passing
+# run can execute those.
 coverage: ## Run the test suite under gcov and fail if hand-written line coverage drops below COVERAGE_MIN
 	@command -v gcovr >/dev/null 2>&1 || { \
 		echo "$(RED)[ERROR]$(NC) gcovr is not installed - 'pip install gcovr' or 'apt-get install gcovr'"; \
@@ -368,7 +373,7 @@ coverage: ## Run the test suite under gcov and fail if hand-written line coverag
 	@echo "$(BLUE)[INFO]$(NC) Measuring coverage of the hand-written sources under $(TEST_DIR)/ ..."
 # The report is printed even when the threshold is not met - the table naming the uncovered
 # lines is exactly what is needed then, so the exit code is captured and re-raised afterwards.
-	@gcovr --root . --filter '$(TEST_DIR)/' --filter 'client/' --print-summary --txt coverage.txt \
+	@gcovr --root . --filter '$(TEST_DIR)/' --filter 'client/' --exclude-noncode-lines --print-summary --txt coverage.txt \
 		--fail-under-line $(COVERAGE_MIN) $(TEST_BUILD_DIR); \
 	status=$$?; cat coverage.txt; exit $$status
 	@echo "$(GREEN)[SUCCESS]$(NC) Hand-written line coverage is at least $(COVERAGE_MIN) %"

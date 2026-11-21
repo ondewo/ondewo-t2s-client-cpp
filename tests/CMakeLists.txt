@@ -97,6 +97,37 @@ gtest_discover_tests(ondewo_client_tests
   DISCOVERY_TIMEOUT 120
   PROPERTIES TIMEOUT 300)
 
+# The Keycloak token provider (client/ondewo/client/keycloak.h) and its libcurl transport
+# (keycloak_curl.h), in an executable of their own: the provider reports failures as a typed
+# exception, so this one is compiled WITH exceptions, and it links libcurl, which the client
+# library itself does not need. It links the client target only for gRPC and protobuf - no
+# --whole-archive, it names no generated type.
+find_package(CURL REQUIRED)
+
+add_executable(ondewo_client_keycloak_tests test_keycloak.cc)
+
+target_include_directories(ondewo_client_keycloak_tests BEFORE PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../client")
+
+target_compile_options(ondewo_client_keycloak_tests PRIVATE -Wall -Wextra)
+
+find_package(Threads REQUIRED)
+target_link_libraries(ondewo_client_keycloak_tests PRIVATE
+  ondewo::${ONDEWO_LIBRARY_NAME}
+  CURL::libcurl
+  Threads::Threads
+  GTest::gtest
+  GTest::gtest_main)
+
+if(ONDEWO_ENABLE_COVERAGE)
+  target_compile_options(ondewo_client_keycloak_tests PRIVATE --coverage -O0 -g)
+  target_link_options(ondewo_client_keycloak_tests PRIVATE --coverage)
+endif()
+
+gtest_discover_tests(ondewo_client_keycloak_tests
+  DISCOVERY_TIMEOUT 120
+  PROPERTIES TIMEOUT 300)
+
 # RELEASE.md against the Makefile's release-notes slice (the GitHub release body). Shell, perl
 # and make only - no C++ - and product-agnostic, like test_tls.cc.
 add_test(NAME ReleaseNotes.SliceHeadingsAndSeparators

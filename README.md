@@ -168,7 +168,9 @@ Every message and service stub is reachable through the umbrella header. Include
 generated header you need (`api/ondewo/t2s/<file>.grpc.pb.h`) to keep compile times down.
 
 Requests are authenticated with a bearer token passed as gRPC call metadata. The key is the lowercase
-`authorization` - gRPC rejects metadata keys containing uppercase characters.
+`authorization` - gRPC rejects metadata keys containing uppercase characters. The example below sets a token you
+obtained yourself; to have the SDK log in to Keycloak, keep the token fresh and attach it to every call, see
+[Keycloak authentication](#keycloak-authentication).
 
 ```cpp
 #include <cstdlib>
@@ -340,6 +342,93 @@ in the gRPC log (`GRPC_VERBOSITY=debug GRPC_TRACE=tsi` for more):
   something that is not PEM, typically a file path. Pass the file's content instead.
 - **`INVALID_ARGUMENT`** from `CreateChannel` itself: half a client identity, or a client identity on a plaintext
   channel - the message says which.
+
+## Keycloak authentication
+
+`<ondewo/client/keycloak.h>` (header-only, next to `channel.h`) logs in to Keycloak, keeps the access token fresh
+and attaches `authorization: Bearer <token>` to every call. It behaves exactly like the token providers of the other
+ONDEWO SDKs (reference: the python SDKs' `ondewo/<api>/utils/keycloak.py`). The Keycloak fields live on the same
+`ondewo::client::ClientConfig`:
+
+| Field                   | Meaning                                                                                       |
+|-------------------------|-----------------------------------------------------------------------------------------------|
+| `keycloak_url`          | Keycloak base URL, the part before `/realms/<realm>`, e.g. `https://host/auth`                |
+| `realm`                 | Realm, e.g. `ondewo-ccai-platform`                                                            |
+| `client_id`             | The PUBLIC SDK client id, e.g. `ondewo-t2s-cai-sdk-public` (no client secret exists)           |
+| `username`              | Technical user of the password grant                                                          |
+| `password`              | Its password - leave empty when you hand over an offline token                                |
+| `token_expiration_in_s` | Optional: stop auto-refreshing this many seconds after the first token (default: never)       |
+| `verify_ssl`            | Verify Keycloak's TLS certificate on the token request only (default `true`)                  |
+| `refresh_token`         | A handed-off Keycloak OFFLINE refresh token, used INSTEAD of the password                     |
+
+With a password the provider starts with one password grant (`grant_type=password`, `scope=offline_access`); with
+`refresh_token` set it starts with one refresh grant and **never sends a password grant**, not even when the token
+is refused - Keycloak's brute-force detection counts failed logins, and many processes sharing one technical user
+would lock it. Prefer the offline token for anything that starts many processes.
+
+The token endpoint is reached through a pluggable `KeycloakTransport`, so `keycloak.h` needs nothing beyond gRPC
+and protobuf. The production transport is libcurl in `<ondewo/client/keycloak_curl.h>`; a consumer that includes it
+links libcurl (`find_package(CURL REQUIRED)`, `target_link_libraries(app PRIVATE CURL::libcurl)`). Both headers use
+C++ exceptions; `channel.h` alone still works with `-fno-exceptions`.
+
+```cpp
+#include <cstdlib>
+#include <iostream>
+#include <memory>
+
+#include <ondewo/client/keycloak_curl.h>
+
+#include "public-api.h"
+
+int main() {
+  ondewo::client::ClientConfig config;
+  config.host = "t2s.example.com";
+  config.port = "443";
+  config.keycloak_url = "https://t2s.example.com/auth";
+  config.realm = "ondewo-ccai-platform";
+  config.client_id = "ondewo-t2s-cai-sdk-public";
+  config.username = "technical-user@example.com";
+  const char* offline_token = std::getenv("ONDEWO_OFFLINE_TOKEN");
+  config.refresh_token = offline_token != nullptr ? offline_token : "";  // or: config.password = ...
+
+  std::shared_ptr<grpc::Channel> channel;
+  const grpc::Status status = ondewo::client::CreateAuthenticatedChannel(
+      config, ondewo::client::CurlKeycloakProviderOptions(), &channel);
+  if (!status.ok()) {
+    std::cerr << status.error_message() << '\n';  // never contains a password or a token
+    return 1;
+  }
+  auto stub = ondewo::t2s::Text2Speech::NewStub(channel);  // every call now carries the bearer token
+  return 0;
+}
+```
+
+What the provider guarantees:
+
+- **One provider per credential set.** `CreateAuthenticatedChannel` / `GetKeycloakTokenProvider` share one provider
+  (one login) between every channel of the same credentials. It is keyed by a SHA-256 of the credential fields
+  (never an address, never a raw value) and held weakly: it lives as long as a channel holds it.
+- **Proactive refresh that survives every failure.** A background thread refreshes 30 s before the token expires. A
+  failed refresh (network error, timeout, HTTP 5xx, a refused or malformed answer) never ends it: it retries with full
+  jitter between 5 s and a ceiling that doubles up to 300 s, and resets after a success. One `WARNING` per failure,
+  one `INFO` on recovery, through `KeycloakProviderOptions::log_sink` (default: `std::clog`).
+- **The per-call path shares that state.** A token that is still valid is served while its refresh fails, no request
+  is sent while a backoff runs, and concurrent calls are single-flight. Only an EXPIRED token fails a call - before it
+  is sent, with the `KeycloakAuthenticationError` text in the status (gRPC 1.51 reports that as `UNAVAILABLE`).
+- **Typed errors.** Every failure is a `KeycloakAuthenticationError` (its `cause()` holds the underlying exception);
+  `CreateAuthenticatedChannel` turns a failed first login into `UNAUTHENTICATED` and a bad config into
+  `INVALID_ARGUMENT`, and opens nothing.
+- **No credential leaks.** `ToString()` renders a non-empty `password` / `refresh_token` as `***REDACTED***`; no log
+  line, error message or registry key carries a password, a refresh token or an access token.
+- **Validation.** `keycloak_url`, `realm` and `client_id` go together, and with them a `password` or a
+  `refresh_token` is required; `ValidateConfig` returns `INVALID_ARGUMENT` otherwise. Without the three fields
+  nothing changes: no provider, no header.
+- A bearer token is never sent over a plaintext channel: `CreateAuthenticatedChannel` refuses
+  `use_secure_channel = false` with Keycloak. To do it anyway (a local test server), build the channel with
+  `CreateChannel` and add the header to each call with `AddKeycloakAuthorization(*provider, &context)`.
+- `KeycloakTokenProvider::Stop()` / `Close()` (also run by the destructor) end the background refresh; the per-call
+  path keeps working. Every timing constant and the clock, jitter and transport are `KeycloakProviderOptions`
+  members, which is how the test suite runs without network or real sleeps.
 
 ## Regenerating the stubs
 

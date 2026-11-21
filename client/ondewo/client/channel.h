@@ -26,6 +26,10 @@
 //     whole process.
 //   - Plaintext with a client identity is refused instead of silently dropping the identity.
 //   - No error message and no ToString() renders a PEM, a key or the whole config.
+//   - The Keycloak fields (keycloak_url ... refresh_token) only configure the token provider of
+//     <ondewo/client/keycloak.h>; CreateChannel() here never sends a token. ValidateConfig()
+//     checks them (the triple goes together; a password or an offline refresh_token is needed),
+//     and ToString() renders password and refresh_token as ***REDACTED***.
 //
 // Errors are reported as grpc::Status (INVALID_ARGUMENT), never thrown, so the header works in
 // code bases compiled with -fno-exceptions.
@@ -36,6 +40,7 @@
 #include <cstddef>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <string>
 
@@ -47,7 +52,7 @@
 namespace ondewo {
 namespace client {
 
-// What ToString() prints in place of a non-empty grpc_client_key.
+// What ToString() prints in place of a non-empty grpc_client_key, password or refresh_token.
 inline constexpr const char* kRedacted = "***REDACTED***";
 
 // Largest message the default channel arguments let through in either direction (2**31 - 1),
@@ -70,13 +75,43 @@ struct ClientConfig {
   // false opens a PLAINTEXT channel - not for production, and refused with a client identity.
   bool use_secure_channel = true;
 
+  // Keycloak (bearer token) authentication, used by <ondewo/client/keycloak.h>. Leave all three of
+  // keycloak_url, realm and client_id empty for a server that needs no token. Fields are only ever
+  // APPENDED: aggregate initialisation is positional, so a field inserted mid-list would silently
+  // rebind an existing caller's arguments (tests/test_keycloak.cc pins the member count and order).
+  //
+  // Keycloak base URL, the part before /realms/<realm>, e.g. "https://host/auth".
+  std::string keycloak_url;
+  // Realm, e.g. "ondewo-ccai-platform".
+  std::string realm;
+  // PUBLIC SDK client id, e.g. "ondewo-t2s-cai-sdk-public". No client secret exists.
+  std::string client_id;
+  // Technical user for the password grant.
+  std::string username;
+  // Technical user password. SECRET: never rendered by ToString().
+  std::string password;
+  // Bounds how long the token is auto-refreshed, counted from the first token. Empty: refresh
+  // until the offline session itself ends.
+  std::optional<int> token_expiration_in_s;
+  // Verify Keycloak's TLS certificate on the token request (and only there). false is for a
+  // self-signed local ingress.
+  bool verify_ssl = true;
+  // A handed-off Keycloak OFFLINE refresh token, used INSTEAD of the password: the provider starts
+  // with a refresh grant and never sends a password grant. SECRET: never rendered by ToString().
+  std::string refresh_token;
+
   // "host:port", with a bare IPv6 literal bracketed ("[::1]:50051"); a host that is already
   // bracketed or carries a scheme ("ipv6:[::1]", "dns:///...", "unix:/...") is left alone.
   std::string HostAndPort() const;
 
   // A one-line rendering safe for logs: the certificates appear as their size only, and a
-  // non-empty grpc_client_key as ***REDACTED*** (an empty one stays empty).
+  // non-empty grpc_client_key, password or refresh_token as ***REDACTED*** (an empty one stays
+  // empty: "nobody set it" is usually what is being debugged).
   std::string ToString() const;
+
+  // True when keycloak_url, realm and client_id are all set: the channel then carries an
+  // "authorization: Bearer <token>" header on every call (see <ondewo/client/keycloak.h>).
+  bool KeycloakConfigured() const { return !keycloak_url.empty() && !realm.empty() && !client_id.empty(); }
 };
 
 inline std::ostream& operator<<(std::ostream& out, const ClientConfig& config) {
@@ -104,6 +139,8 @@ inline std::string SizeOnly(const std::string& pem) {
   return pem.empty() ? std::string() : "<" + std::to_string(pem.size()) + " bytes>";
 }
 
+inline std::string RedactedOrEmpty(const std::string& secret) { return secret.empty() ? std::string() : kRedacted; }
+
 inline grpc::Status Invalid(const std::string& message) {
   return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, message);
 }
@@ -118,12 +155,18 @@ inline std::string ClientConfig::ToString() const {
   return "ClientConfig{host=" + host + ", port=" + port +
          ", grpc_cert=" + internal::SizeOnly(grpc_cert) +
          ", grpc_client_cert=" + internal::SizeOnly(grpc_client_cert) +
-         ", grpc_client_key=" + (grpc_client_key.empty() ? "" : kRedacted) +
-         ", use_secure_channel=" + (use_secure_channel ? "true" : "false") + "}";
+         ", grpc_client_key=" + internal::RedactedOrEmpty(grpc_client_key) +
+         ", use_secure_channel=" + (use_secure_channel ? "true" : "false") + ", keycloak_url=" + keycloak_url +
+         ", realm=" + realm + ", client_id=" + client_id + ", username=" + username +
+         ", password=" + internal::RedactedOrEmpty(password) + ", token_expiration_in_s=" +
+         (token_expiration_in_s ? std::to_string(*token_expiration_in_s) : std::string()) +
+         ", verify_ssl=" + (verify_ssl ? "true" : "false") +
+         ", refresh_token=" + internal::RedactedOrEmpty(refresh_token) + "}";
 }
 
-// Checks the config without touching gRPC: both-or-neither for the client identity, and no
-// client identity on a plaintext channel. The message names fields and host:port only.
+// Checks the config without touching gRPC: both-or-neither for the client identity, no client
+// identity on a plaintext channel, the Keycloak triple all-or-nothing, and a credential (password or
+// refresh_token) when Keycloak is configured. The message names fields and host:port only.
 inline grpc::Status ValidateConfig(const ClientConfig& config) {
   if (config.grpc_client_cert.empty() != config.grpc_client_key.empty()) {
     return internal::Invalid("ClientConfig for " + config.HostAndPort() +
@@ -134,6 +177,14 @@ inline grpc::Status ValidateConfig(const ClientConfig& config) {
     return internal::Invalid("ClientConfig for " + config.HostAndPort() +
                              " carries a client certificate for mutual TLS, but use_secure_channel"
                              " is false and would send it nowhere; use a secure channel.");
+  }
+  const bool any_keycloak = !config.keycloak_url.empty() || !config.realm.empty() || !config.client_id.empty();
+  if (any_keycloak && !config.KeycloakConfigured()) {
+    return internal::Invalid(
+        "The Keycloak fields `keycloak_url`, `realm`, and `client_id` must be provided together in ClientConfig.");
+  }
+  if (config.KeycloakConfigured() && config.password.empty() && config.refresh_token.empty()) {
+    return internal::Invalid("Either the field `password` or the field `refresh_token` is mandatory in ClientConfig.");
   }
   return grpc::Status::OK;
 }

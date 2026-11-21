@@ -12,8 +12,10 @@
 
 #include "public-api.h"
 
-// The hand-written channel helper is installed beside the generated headers.
+// The hand-written channel helper and the Keycloak token provider are installed beside the
+// generated headers (keycloak_curl.h too, which only a consumer linking libcurl includes).
 #include <ondewo/client/channel.h>
+#include <ondewo/client/keycloak.h>
 
 int main() {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
@@ -35,6 +37,16 @@ int main() {
   config.grpc_client_cert = "cert";
   if (ondewo::client::ValidateConfig(config).ok()) {
     std::fprintf(stderr, "ondewo/client/channel.h accepted half a client identity\n");
+    return 1;
+  }
+
+  // ... and a Keycloak triple without a password or an offline refresh_token.
+  ondewo::client::ClientConfig keycloak;
+  keycloak.keycloak_url = "https://keycloak.example/auth";
+  keycloak.realm = "realm";
+  keycloak.client_id = "client";
+  if (ondewo::client::ValidateConfig(keycloak).ok() || !keycloak.KeycloakConfigured()) {
+    std::fprintf(stderr, "ondewo/client/channel.h accepted a Keycloak config without a credential\n");
     return 1;
   }
 
